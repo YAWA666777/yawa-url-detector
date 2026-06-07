@@ -1,0 +1,292 @@
+import os
+import tkinter as tk
+from tkinter import messagebox
+from tkinter import ttk
+import requests
+import base64
+import csv
+from datetime import datetime
+import webbrowser
+from urllib.parse import urlparse
+import threading
+
+# Import the environment configuration loader
+from dotenv import load_dotenv
+
+# ==========================================
+# CONFIGURATION & SECRET MANAGEMENT
+# ==========================================
+# Load ecosystem variables from the local hidden .env file
+load_dotenv()
+
+# Extract the credential safely out of system environment memory
+API_KEY = os.getenv("VIRUSTOTAL_API_KEY")
+API_URL = "https://www.virustotal.com/api/v3/urls"
+LOG_FILE = "scan_history.csv"
+AUTO_REPORT_FILE = "yawa.url.txt"
+
+# ==========================================
+# ADVANCED FEATURES / EXTENSIONS
+# ==========================================
+def log_to_csv(url, malicious, harmless, verdict):
+    try:
+        try:
+            with open(LOG_FILE, 'r') as f:
+                has_header = True
+        except FileNotFoundError:
+            has_header = False
+
+        with open(LOG_FILE, mode='a', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            if not has_header:
+                writer.writerow(["Timestamp", "Target URL", "Malicious Engines", "Harmless Engines", "Verdict"])
+            
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            writer.writerow([timestamp, url, malicious, harmless, verdict])
+    except Exception as e:
+        print(f"Logging System Error: {e}")
+
+def auto_save_threat_report(url, verdict, malicious, harmless, metadata):
+    """Automatically logs unsafe threat profiles to yawa.url.txt"""
+    try:
+        with open(AUTO_REPORT_FILE, mode='a', encoding='utf-8') as f:
+            f.write("========================================================\n")
+            f.write("          YAWA AUTOMATIC DETECTOR THREAT REPORT         \n")
+            f.write(f"          TIMESTAMP: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write("========================================================\n")
+            f.write(f"FLAGGED URL : {url}\n")
+            f.write(f"SECURITY VERDICT : {verdict}\n")
+            f.write(f"DETECTION MATRIX : Flagged by {malicious} engines (Clean: {harmless})\n\n")
+            f.write("PARSED METADATA LOGS:\n")
+            f.write(f"{metadata}\n")
+            f.write("========================================================\n\n")
+        print(f"[YAWA] Threat signature auto-saved to {AUTO_REPORT_FILE}")
+    except Exception as e:
+        print(f"Automatic Reporting System Error: {e}")
+
+def open_browser_safely():
+    clean_url = url_input.get().strip()
+    if clean_url:
+        webbrowser.open(clean_url)
+
+def clear_input():
+    url_input.delete(0, tk.END)
+    status_label.config(text="SYSTEM IDLE // Standby for signature submission...", fg="#64748B")
+    risk_bar['value'] = 0
+    style.configure("Custom.Horizontal.TProgressbar", background="#1E293B")
+    breakdown_label.config(text="LOG: Core buffer currently empty.")
+    safe_launch_button.pack_forget()
+
+# ==========================================
+# CYBERSECURITY DETECTION THREAD LOGIC
+# ==========================================
+def check_url_safety_worker():
+    """Background thread worker that processes the API request without freezing the GUI"""
+    
+    # DEFENSIVE CHECK: Ensure API Key was successfully loaded into memory from .env
+    if not API_KEY:
+        root.after(0, lambda: messagebox.showerror(
+            "Security Exception", 
+            "Critical Fault: VirusTotal API Key was not detected.\n\n"
+            "Please configure your local hidden '.env' file variable "
+            "before executing target node validations."
+        ))
+        root.after(0, lambda: status_label.config(text="SYSTEM ERROR // Missing API Credentials", fg="#EF4444"))
+        return
+
+    target_url = url_input.get().strip()
+    
+    # Reset UI metrics to default scanning modes safely across thread boundaries
+    root.after(0, lambda: safe_launch_button.pack_forget())
+    root.after(0, lambda: breakdown_label.config(text=""))
+    root.after(0, lambda: risk_bar.config(value=0))
+    
+    if not target_url:
+        root.after(0, lambda: messagebox.showwarning("Buffer Error", "Please parse an input URL string before running analysis sequence."))
+        root.after(0, lambda: status_label.config(text="SYSTEM IDLE // Standby for signature submission...", fg="#64748B"))
+        return
+
+    root.after(0, lambda: status_label.config(text="⚡ INJECTING QUERY: Extracting remote database metrics...", fg="#00F0FF"))
+
+    # LOCAL DOMAIN EXTRACTION
+    try:
+        parsed_url = urlparse(target_url)
+        if not parsed_url.scheme:
+            parsed_url = urlparse("http://" + target_url)
+            
+        protocol = parsed_url.scheme.upper()
+        domain = parsed_url.netloc if parsed_url.netloc else parsed_url.path.split('/')[0]
+        path = parsed_url.path if parsed_url.path else "/"
+        
+        breakdown_text = f"⚙️ NETWORK METADATA PARSER:\n[ PROTOCOL ]: {protocol}\n[ TARGET DOMAIN ]: {domain}\n[ PATH DIRECTORY ]: {path}"
+        root.after(0, lambda: breakdown_label.config(text=breakdown_text, fg="#E2E8F0"))
+    except Exception:
+        breakdown_text = "⚠️ PARSER FAULT: Link normalization failed."
+        root.after(0, lambda: breakdown_label.config(text=breakdown_text, fg="#F59E0B"))
+
+    # CORE API SCANNERS
+    try:
+        # Secure URL Identifier Transform
+        try:
+            url_id = base64.urlsafe_b64encode(target_url.encode()).decode().strip("=")
+        except Exception as encode_err:
+            root.after(0, lambda: status_label.config(text="ERROR: Base64 data parsing trace failure.", fg="#EF4444"))
+            root.after(0, lambda: messagebox.showerror("Data Transform Fault", str(encode_err)))
+            return
+        
+        headers = {
+            "accept": "application/json",
+            "x-apikey": API_KEY
+        }
+        
+        response = requests.get(f"{API_URL}/{url_id}", headers=headers)
+        
+        if response.status_code == 200:
+            data = response.json()
+            stats = data['data']['attributes']['last_analysis_stats']
+            malicious_count = stats.get('malicious', 0) + stats.get('suspicious', 0)
+            harmless_count = stats.get('harmless', 0) + stats.get('undetected', 0)
+
+            if malicious_count == 0:
+                # Progress bar drops to 0 on safe validation metrics
+                root.after(0, lambda: risk_bar.config(value=0))
+                root.after(0, lambda: style.configure("Custom.Horizontal.TProgressbar", background="#10B981")) # Cyber Green
+                
+                result_text = f"🛡️ SECURE NODE VALIDATED\n\nThreat signatures verified negative across {harmless_count} global security nodes."
+                root.after(0, lambda: status_label.config(text=result_text, fg="#10B981"))
+                
+                log_to_csv(target_url, malicious_count, harmless_count, "CLEAN/SAFE")
+                root.after(0, lambda: safe_launch_button.pack(pady=15))
+                
+            elif 1 <= malicious_count <= 3:
+                root.after(0, lambda: risk_bar.config(value=50))
+                root.after(0, lambda: style.configure("Custom.Horizontal.TProgressbar", background="#F59E0B")) # Warning Amber
+                
+                result_text = f"⚠️ SUSPICIOUS ANOMALY DETECTED\n\nFlagged by {malicious_count} active database engines. Review integrity logs before access."
+                root.after(0, lambda: status_label.config(text=result_text, fg="#F59E0B"))
+                
+                log_to_csv(target_url, malicious_count, harmless_count, "SUSPICIOUS")
+                auto_save_threat_report(target_url, "SUSPICIOUS", malicious_count, harmless_count, breakdown_label.cget("text"))
+                
+            else:
+                root.after(0, lambda: risk_bar.config(value=100))
+                root.after(0, lambda: style.configure("Custom.Horizontal.TProgressbar", background="#EF4444")) # Critical Red
+                
+                result_text = f"🚨 CRITICAL THREAT WARNING // PHISHING BLOCKED\n\nPositive malware signatures found on {malicious_count} network scanners."
+                root.after(0, lambda: status_label.config(text=result_text, fg="#EF4444"))
+                
+                log_to_csv(target_url, malicious_count, harmless_count, "MALICIOUS/PHISHING")
+                auto_save_threat_report(target_url, "CRITICAL MALICIOUS / PHISHING", malicious_count, harmless_count, breakdown_label.cget("text"))
+                
+        elif response.status_code == 404:
+            root.after(0, lambda: status_label.config(text="Unknown node sequence. Submitting to sandbox registry...", fg="#F59E0B"))
+            
+            submit_response = requests.post(API_URL, headers=headers, data={"url": target_url})
+            if submit_response.status_code == 200:
+                root.after(0, lambda: status_label.config(text="Sequence registered. Re-run scan in 10 seconds.", fg="#00F0FF"))
+            else:
+                root.after(0, lambda: status_label.config(text="Failed to bridge network link to cloud database.", fg="#EF4444"))
+        else:
+            root.after(0, lambda: status_label.config(text=f"DISRUPTION: Trace fault code [{response.status_code}]", fg="#EF4444"))
+
+    except Exception as e:
+        root.after(0, lambda: status_label.config(text="CONNECTION LOSS: Interface route failed.", fg="#EF4444"))
+        root.after(0, lambda: messagebox.showerror("Network Fault", str(e)))
+
+def check_url_safety_threaded():
+    """Initializes verification sequence securely inside an independent background thread."""
+    threading.Thread(target=check_url_safety_worker, daemon=True).start()
+
+# ==========================================
+# HOVER EFFECTS FOR BUTTONS
+# ==========================================
+def on_enter_scan(e): analyze_button['background'] = '#00E0EF'
+def on_leave_scan(e): analyze_button['background'] = '#00F0FF'
+def on_enter_clear(e): clear_button['background'] = '#475569'
+def on_leave_clear(e): clear_button['background'] = '#1E293B'
+
+def show_right_click_menu(event):
+    try:
+        right_click_menu.tk_popup(event.x_root, event.y_root)
+    finally:
+        right_click_menu.grab_release()
+
+def paste_text():
+    try:
+        text = root.clipboard_get()
+        url_input.insert(tk.INSERT, text)
+    except tk.TclError:
+        pass
+
+# ==========================================
+# GRAPHICAL USER INTERFACE (GUI) DESIGN
+# ==========================================
+root = tk.Tk()
+root.title("YAWA URL DETECTOR // SYSTEM CORE v3.0")
+root.geometry("650x660")  
+root.configure(bg="#0A0E17") # Deep Cyberpunk Obsidian Black/Navy
+root.resizable(False, False)
+
+# Main Title Header Banner
+title_label = tk.Label(root, text="🛡️ YAWA URL DETECTOR", font=("Courier New", 20, "bold"), bg="#0A0E17", fg="#00F0FF")
+title_label.pack(pady=22)
+
+# Input Framework Card Section Box
+input_card = tk.LabelFrame(root, text=" TARGET ENDPOINT INGESTION ", font=("Segoe UI", 9, "bold"), bg="#0A0E17", fg="#475569", padx=15, pady=12, bd=1, relief="flat", highlightthickness=1, highlightbackground="#1E293B")
+input_card.pack(fill="x", padx=35, pady=5)
+
+instruction_label = tk.Label(input_card, text="Paste raw destination URL string for structural analysis:", font=("Segoe UI", 10), bg="#0A0E17", fg="#94A3B8")
+instruction_label.pack(anchor="w", pady=2)
+
+# Professional Padded Input Field with Cyan Focus Glow Border
+url_input = tk.Entry(input_card, width=50, font=("Consolas", 11), bg="#111827", fg="#00F0FF", insertbackground="#00F0FF", bd=0, highlightthickness=1, highlightbackground="#1E293B", highlightcolor="#00F0FF")
+url_input.pack(pady=8, ipady=8, fill="x")
+url_input.focus()
+
+# Clipboard Hooks
+url_input.bind("<Control-v>", lambda e: paste_text())
+url_input.bind("<Button-3>", show_right_click_menu)
+
+right_click_menu = tk.Menu(root, tearoff=0, bg="#111827", fg="#F1F5F9", activebackground="#00F0FF", activeforeground="#0A0E17", bd=0)
+right_click_menu.add_command(label="Paste Context Clipboard", command=paste_text)
+
+# Button Control Panel Configuration
+button_frame = tk.Frame(root, bg="#0A0E17")
+button_frame.pack(pady=15)
+
+analyze_button = tk.Button(button_frame, text="RUN SCAN SEQUENCE", font=("Segoe UI", 10, "bold"), bg="#00F0FF", fg="#0A0E17", activebackground="#00E0EF", activeforeground="#0A0E17", padx=18, pady=7, bd=0, cursor="hand2")
+analyze_button.config(command=check_url_safety_threaded)
+analyze_button.pack(side=tk.LEFT, padx=12)
+analyze_button.bind("<Enter>", on_enter_scan)
+analyze_button.bind("<Leave>", on_leave_scan)
+
+clear_button = tk.Button(button_frame, text="CLEAR BUFFER", font=("Segoe UI", 10, "bold"), bg="#1E293B", fg="#94A3B8", activebackground="#334155", activeforeground="#F1F5F9", padx=18, pady=7, bd=0, cursor="hand2")
+clear_button.config(command=clear_input)
+clear_button.pack(side=tk.LEFT, padx=12)
+clear_button.bind("<Enter>", on_enter_clear)
+clear_button.bind("<Leave>", on_leave_clear)
+
+# Network Metadata Card Box Panel
+breakdown_label = tk.Label(root, text="LOG: Core buffer currently empty.", font=("Consolas", 9), justify=tk.LEFT, anchor="w", wraplength=540, bg="#111827", fg="#475569", padx=15, pady=12, bd=0, highlightthickness=1, highlightbackground="#1E293B")
+breakdown_label.pack(fill="x", padx=35, pady=5)
+
+# Threat Metrics Progress Bar Meter Layout Block
+meter_label = tk.Label(root, text="REAL-TIME NODE RISK AUDIT METRIC", font=("Segoe UI", 9, "bold"), bg="#0A0E17", fg="#475569")
+meter_label.pack(pady=10)
+
+style = ttk.Style()
+style.theme_use('clam')
+style.configure("Custom.Horizontal.TProgressbar", thickness=10, background="#1E293B", troughcolor="#111827", bordercolor="#111827")
+
+risk_bar = ttk.Progressbar(root, style="Custom.Horizontal.TProgressbar", orient="horizontal", length=570, mode="determinate")
+risk_bar.pack(pady=2)
+
+# Central Display System Log Card Container Frame
+status_label = tk.Label(root, text="SYSTEM IDLE // Standby for signature submission...", font=("Consolas", 11), bg="#0A0E17", fg="#64748B", wraplength=540, justify=tk.CENTER)
+status_label.pack(pady=15, fill="both", expand=True)
+
+# Safe Browser Direct Sandbox Access Component Trigger
+safe_launch_button = tk.Button(root, text="🚀 INITIALIZE SAFE LINK ACCESS", font=("Segoe UI", 10, "bold"), bg="#10B981", fg="#F1F5F9", activebackground="#059669", activeforeground="#F1F5F9", padx=15, pady=7, bd=0, cursor="hand2", command=open_browser_safely)
+
+# Execute main engine lifecycle loop
+root.mainloop()
